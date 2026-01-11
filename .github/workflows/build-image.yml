@@ -81,8 +81,8 @@ jobs:
           file: ${{ needs.setup.outputs.dockerfile }}
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}:cache-${{ matrix.platform == \"linux/amd64\" && \"amd64\" || \"arm64\" }}
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}:cache-${{ matrix.platform == \"linux/amd64\" && \"amd64\" || \"arm64\" }},mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}:cache-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}:cache-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }},mode=max
 
       - name: Export digest
         run: |
@@ -93,7 +93,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.platform == \"linux/amd64\" && \"amd64\" || \"arm64\" }}
+          name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
