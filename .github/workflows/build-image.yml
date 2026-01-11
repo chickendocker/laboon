@@ -1,0 +1,137 @@
+name: Build App Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "App name (from laboon.yaml)"
+        required: true
+      git_ref:
+        description: "Git reference (branch, tag, or commit hash)"
+        required: true
+        default: "main"
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      repository: ${{ steps.get-config.outputs.repository }}
+      dockerfile: ${{ steps.get-config.outputs.dockerfile }}
+      matrix: ${{ steps.get-config.outputs.matrix }}
+    steps:
+      - name: Checkout laboon repo
+        uses: actions/checkout@v4
+
+      - name: Get App Configuration
+        id: get-config
+        run: |
+          # Use yq to extract fields for the specific app name
+          CONFIG_JSON=$(yq eval ".build_configs[] | select(.name == \"${{ github.event.inputs.name }}\")" laboon.yaml -o=json)
+          
+          if [ -z "$CONFIG_JSON" ] || [ "$CONFIG_JSON" == "null" ]; then
+            echo "Error: App ${{ github.event.inputs.name }} not found in laboon.yaml"
+            exit 1
+          fi
+          
+          REPOSITORY_URL=$(echo "$CONFIG_JSON" | jq -r ".repository")
+          # Convert git@github.com:org/repo.git to org/repo
+          REPOSITORY=$(echo "$REPOSITORY_URL" | sed -e "s/git@github.com://" -e "s/\.git$//")
+          
+          DOCKERFILE=$(echo "$CONFIG_JSON" | jq -r ".dockerfile // \"Dockerfile\"")
+          MATRIX_INCLUDE=$(echo "$CONFIG_JSON" | jq -c ".matrix_include")
+          
+          echo "repository=$REPOSITORY" >> $GITHUB_OUTPUT
+          echo "dockerfile=$DOCKERFILE" >> $GITHUB_OUTPUT
+          echo "matrix={\"include\":$MATRIX_INCLUDE}" >> $GITHUB_OUTPUT
+
+  build:
+    needs: setup
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout App code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.setup.outputs.repository }}
+          ref: ${{ github.event.inputs.git_ref }}
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ needs.setup.outputs.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}:cache-${{ matrix.platform == \"linux/amd64\" && \"amd64\" || \"arm64\" }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}:cache-${{ matrix.platform == \"linux/amd64\" && \"amd64\" || \"arm64\" }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.platform == \"linux/amd64\" && \"amd64\" || \"arm64\" }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          IMAGE_NAME="${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}"
+          TAG="${{ github.event.inputs.git_ref }}"
+          docker buildx imagetools create -t "$IMAGE_NAME:$TAG" \
+            $(printf "$IMAGE_NAME@sha256:%s " *)
+
+      - name: Inspect image
+        run: |
+          IMAGE_NAME="${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}"
+          TAG="${{ github.event.inputs.git_ref }}"
+          docker buildx imagetools inspect "$IMAGE_NAME:$TAG"
