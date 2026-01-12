@@ -126,12 +126,18 @@ jobs:
         working-directory: /tmp/digests
         run: |
           IMAGE_NAME="${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}"
+          # Sanitize git_ref to be a valid Docker tag (replace / and _ with -)
           TAG="${{ github.event.inputs.git_ref }}"
+          TAG="${TAG//\//-}"
+          TAG="${TAG//_/-}"
           docker buildx imagetools create -t "$IMAGE_NAME:$TAG" \
             $(printf "$IMAGE_NAME@sha256:%s " *)
 
       - name: Inspect image
         run: |
           IMAGE_NAME="${{ env.REGISTRY }}/chickendocker/${{ github.event.inputs.name }}"
+          # Sanitize git_ref to be a valid Docker tag (replace / and _ with -)
           TAG="${{ github.event.inputs.git_ref }}"
+          TAG="${TAG//\//-}"
+          TAG="${TAG//_/-}"
           docker buildx imagetools inspect "$IMAGE_NAME:$TAG"
